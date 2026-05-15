@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import html
+import json
+from urllib.parse import quote
 
 from pydantic import ValidationError
 import streamlit as st
+import streamlit.components.v1 as components
 
 from app.crew_workflow import generate_with_content_crew
 from app.errors import AppError
@@ -73,7 +76,7 @@ def main() -> None:
             st.session_state["theme"] = next_theme
             st.rerun()
 
-    input_column, output_column = st.columns([1.25, 1], gap="large")
+    input_column, output_column = st.columns([0.95, 1.55], gap="large")
 
     with input_column:
         st.markdown(
@@ -96,7 +99,7 @@ def main() -> None:
                 placeholder="Example: a horror story, a stage play, a LinkedIn post",
                 max_chars=180,
             )
-            audience_column, length_column = st.columns([1.45, 1], gap="medium")
+            audience_column, length_column = st.columns([1, 1], gap="medium")
             with audience_column:
                 audience = st.text_input("Audience", value="marketing leaders", max_chars=140)
             with length_column:
@@ -150,7 +153,7 @@ def inject_theme_css(theme: str) -> None:
           }}
 
           .block-container {{
-            max-width: 1120px;
+            max-width: 1320px;
             padding-top: 1.65rem;
             padding-bottom: 2.5rem;
           }}
@@ -378,7 +381,7 @@ def render_header() -> None:
 
 def format_length_option(label: str) -> str:
     value = LENGTH_OPTIONS[label]
-    return f"{label} ({LENGTH_GUIDANCE[value]})"
+    return f"{label}"
 
 
 def build_request(
@@ -433,27 +436,222 @@ def render_output() -> None:
         )
         return
 
-    escaped_output = html.escape(output)
-    escaped_model = html.escape(st.session_state["generated_model"])
-    st.markdown(
-        f"""
-        <div class="output-pane">
-          <div class="output-header">
-            <div>
-              <h2>Final Output</h2>
-              <p class="status-text">Generated with {escaped_model}</p>
-            </div>
-          </div>
-          <div class="output-body">{escaped_output}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    render_generated_output(
+        output=output,
+        model_name=st.session_state["generated_model"],
+        theme=st.session_state["theme"],
     )
-    st.download_button(
-        "Download output",
-        data=output,
-        file_name="content-crew-output.md",
-        mime="text/markdown",
+
+
+def render_generated_output(output: str, model_name: str, theme: str) -> None:
+    tokens = THEME_TOKENS[theme]
+    escaped_output = html.escape(output)
+    escaped_model = html.escape(model_name)
+    clipboard_text = json.dumps(output)
+    download_href = f"data:text/markdown;charset=utf-8,{quote(output)}"
+
+    components.html(
+        f"""
+        <!doctype html>
+        <html>
+          <head>
+            <style>
+              :root {{
+                --cc-panel: {tokens["panel"]};
+                --cc-panel-alt: {tokens["panel_alt"]};
+                --cc-text: {tokens["text"]};
+                --cc-muted: {tokens["muted"]};
+                --cc-border: {tokens["border"]};
+                --cc-accent: {tokens["accent"]};
+                --cc-accent-hover: {tokens["accent_hover"]};
+                --cc-accent-soft: {tokens["accent_soft"]};
+                --cc-accent-text: {tokens["accent_text"]};
+                --cc-output: {tokens["output"]};
+                --cc-shadow: {tokens["shadow"]};
+              }}
+
+              * {{
+                box-sizing: border-box;
+              }}
+
+              body {{
+                margin: 0;
+                color: var(--cc-text);
+                font-family: "Source Sans Pro", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+              }}
+
+              .output-pane {{
+                background: var(--cc-panel);
+                border: 1px solid var(--cc-border);
+                border-radius: 8px;
+                box-shadow: var(--cc-shadow);
+                padding: 1.15rem;
+              }}
+
+              .output-header {{
+                display: flex;
+                align-items: flex-start;
+                justify-content: space-between;
+                gap: 1rem;
+                margin-bottom: 1rem;
+              }}
+
+              .output-title {{
+                min-width: 0;
+              }}
+
+              .output-title-row {{
+                display: flex;
+                align-items: center;
+                gap: 0.55rem;
+              }}
+
+              h2 {{
+                margin: 0;
+                color: var(--cc-text);
+                font-size: 1.25rem;
+                line-height: 1.25;
+              }}
+
+              .status-text {{
+                margin: 0.2rem 0 0;
+                color: var(--cc-muted);
+                font-size: 0.92rem;
+              }}
+
+              .output-actions {{
+                display: flex;
+                align-items: center;
+                gap: 0.4rem;
+              }}
+
+              .icon-button {{
+                display: inline-flex;
+                width: 2.15rem;
+                height: 2.15rem;
+                align-items: center;
+                justify-content: center;
+                border: 1px solid var(--cc-border);
+                border-radius: 6px;
+                background: var(--cc-panel);
+                color: var(--cc-text);
+                cursor: pointer;
+                text-decoration: none;
+              }}
+
+              .icon-button:hover {{
+                border-color: var(--cc-accent);
+                background: var(--cc-panel-alt);
+              }}
+
+              .icon-button svg {{
+                width: 1.05rem;
+                height: 1.05rem;
+                stroke: currentColor;
+                stroke-width: 2;
+                stroke-linecap: round;
+                stroke-linejoin: round;
+                fill: none;
+              }}
+
+              .copy-status {{
+                min-width: 3.25rem;
+                color: var(--cc-muted);
+                font-size: 0.82rem;
+                font-weight: 700;
+              }}
+
+              .output-body {{
+                min-height: 482px;
+                max-height: 620px;
+                overflow: auto;
+                border: 1px solid var(--cc-border);
+                border-radius: 6px;
+                background: var(--cc-output);
+                padding: 1.15rem;
+                color: var(--cc-text);
+                font-size: 1rem;
+                line-height: 1.6;
+                white-space: pre-wrap;
+              }}
+
+              @media (max-width: 720px) {{
+                .output-header {{
+                  flex-direction: column;
+                }}
+
+                .output-actions {{
+                  align-self: flex-start;
+                }}
+              }}
+            </style>
+          </head>
+          <body>
+            <div class="output-pane">
+              <div class="output-header">
+                <div class="output-title">
+                  <div class="output-title-row">
+                    <h2>Final Output</h2>
+                    <div class="output-actions" aria-label="Output actions">
+                      <button class="icon-button" type="button" title="Copy output" aria-label="Copy output" onclick="copyOutput()">
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <rect x="9" y="9" width="13" height="13" rx="2"></rect>
+                          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                        </svg>
+                      </button>
+                      <a class="icon-button" title="Download output" aria-label="Download output" href="{download_href}" download="content-crew-output.md">
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                          <path d="M7 10l5 5 5-5"></path>
+                          <path d="M12 15V3"></path>
+                        </svg>
+                      </a>
+                    </div>
+                  </div>
+                  <p class="status-text">Generated with {escaped_model}</p>
+                </div>
+                <div class="copy-status" id="copy-status" aria-live="polite"></div>
+              </div>
+              <div class="output-body">{escaped_output}</div>
+            </div>
+            <script>
+              const outputText = {clipboard_text};
+
+              function setCopyStatus(message) {{
+                const status = document.getElementById("copy-status");
+                status.textContent = message;
+                window.clearTimeout(window.copyStatusTimer);
+                window.copyStatusTimer = window.setTimeout(() => {{
+                  status.textContent = "";
+                }}, 1500);
+              }}
+
+              async function copyOutput() {{
+                try {{
+                  if (navigator.clipboard && window.isSecureContext) {{
+                    await navigator.clipboard.writeText(outputText);
+                  }} else {{
+                    const textArea = document.createElement("textarea");
+                    textArea.value = outputText;
+                    textArea.style.position = "fixed";
+                    textArea.style.left = "-9999px";
+                    document.body.appendChild(textArea);
+                    textArea.focus();
+                    textArea.select();
+                    document.execCommand("copy");
+                    textArea.remove();
+                  }}
+                  setCopyStatus("Copied");
+                }} catch (error) {{
+                  setCopyStatus("Copy failed");
+                }}
+              }}
+            </script>
+          </body>
+        </html>
+        """,
+        height=720,
+        scrolling=False,
     )
 
 
