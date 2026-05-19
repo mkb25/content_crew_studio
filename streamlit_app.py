@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import html
 import json
+import os
+import re
 from urllib.parse import quote
 
 from pydantic import ValidationError
@@ -10,14 +12,24 @@ import streamlit.components.v1 as components
 
 from app.crew_workflow import generate_with_content_crew
 from app.errors import AppError
-from app.prompts import LENGTH_GUIDANCE
 from app.schemas import GenerateRequest
+
 
 LENGTH_OPTIONS = {
     "Short": "short",
     "Medium": "medium",
     "Long": "long",
 }
+
+# Available Groq models (add or adjust as needed)
+MODEL_OPTIONS = {
+    "llama-3.3-70b-versatile": "llama-3.3-70b-versatile",
+    "openai/gpt-oss-120b": "openai/gpt-oss-120b",
+    "groq/compound-mini": "groq/compound-mini",
+}
+
+INLINE_CODE_RE = re.compile(r"`([^`]+)`")
+LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+|mailto:[^)\s]+)\)")
 
 THEME_TOKENS = {
     "Light": {
@@ -60,70 +72,116 @@ def main() -> None:
         layout="wide",
     )
 
-    if "theme" not in st.session_state:
-        st.session_state["theme"] = "Light"
-
-    theme = st.session_state["theme"]
-
+    theme = get_theme()
     inject_theme_css(theme)
-    header_column, theme_column = st.columns([3.2, 1], gap="large")
-    with header_column:
-        render_header()
-    with theme_column:
-        st.markdown('<div class="theme-label">Appearance</div>', unsafe_allow_html=True)
-        next_theme = "Dark" if theme == "Light" else "Light"
-        if st.button(f"{next_theme} mode", key="theme_toggle"):
-            st.session_state["theme"] = next_theme
-            st.rerun()
+    render_top_bar(theme)
 
     input_column, output_column = st.columns([0.95, 1.55], gap="large")
 
     with input_column:
-        st.markdown(
-            """
-            <div class="section-heading">
-              <span>Compose</span>
-              <small>Brief the crew</small>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        with st.form("content-form"):
-            topic = st.text_input(
-                "Topic",
-                placeholder="Example: AI agents for real estate sales",
-                max_chars=240,
-            )
-            style = st.text_input(
-                "Write it like",
-                placeholder="Example: a horror story, a stage play, a LinkedIn post",
-                max_chars=180,
-            )
-            audience_column, length_column = st.columns([1, 1], gap="medium")
-            with audience_column:
-                audience = st.text_input("Audience", value="marketing leaders", max_chars=140)
-            with length_column:
-                length_label = st.selectbox(
-                    "Length",
-                    options=list(LENGTH_OPTIONS),
-                    format_func=format_length_option,
-                    index=1,
-                )
-            submitted = st.form_submit_button("Run agents", type="primary")
+        render_compose_panel()
 
     with output_column:
         render_output()
 
-    if submitted:
-        request = build_request(
-            topic=topic,
-            style=style,
-            audience=audience,
-            length=LENGTH_OPTIONS[length_label],
+
+def get_theme() -> str:
+    if "theme" not in st.session_state:
+        st.session_state["theme"] = "Light"
+
+    return st.session_state["theme"]
+
+
+def render_top_bar(theme: str) -> None:
+    header_column, theme_column = st.columns([3.2, 1], gap="large")
+    with header_column:
+        render_header()
+    with theme_column:
+        render_theme_toggle(theme)
+
+
+def render_theme_toggle(theme: str) -> None:
+    st.markdown('<div class="theme-label">Appearance</div>', unsafe_allow_html=True)
+    next_theme = "Dark" if theme == "Light" else "Light"
+    if st.button(f"{next_theme} mode", key="theme_toggle"):
+        st.session_state["theme"] = next_theme
+        st.rerun()
+
+
+def render_compose_panel() -> None:
+    render_section_heading("Compose", "Brief the crew")
+    form_values = render_compose_form()
+
+    if form_values is None:
+        return
+
+    topic, style, audience, length_label, model_label = form_values
+    request = build_request(
+        topic=topic,
+        style=style,
+        audience=audience,
+        length=LENGTH_OPTIONS[length_label],
+    )
+    if request is None:
+        return
+
+    os.environ["GROQ_MODEL"] = MODEL_OPTIONS[model_label]
+    prepare_generation_run(request)
+    run_generation(request)
+
+
+def render_section_heading(title: str, subtitle: str) -> None:
+    st.markdown(
+        f"""
+        <div class="section-heading">
+          <span>{html.escape(title)}</span>
+          <small>{html.escape(subtitle)}</small>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_compose_form() -> tuple[str, str, str, str, str] | None:
+    with st.form("content-form"):
+        topic = st.text_input(
+            "Topic",
+            placeholder="Example: AI agents for real estate sales",
+            max_chars=240,
         )
-        if request is not None:
-            run_generation(request)
-            st.rerun()
+        style = st.text_input(
+            "Write it like",
+            placeholder="Example: a horror story, a stage play, a LinkedIn post",
+            max_chars=180,
+        )
+        audience_column, length_column = st.columns([1, 1], gap="medium")
+        with audience_column:
+            audience = st.text_input("Audience", value="marketing leaders", max_chars=140)
+        with length_column:
+            length_label = st.selectbox(
+                "Length",
+                options=list(LENGTH_OPTIONS),
+                format_func=format_length_option,
+                index=1,
+            )
+
+        model_label = st.selectbox(
+            "Model",
+            options=list(MODEL_OPTIONS),
+            index=0,
+        )
+        submitted = st.form_submit_button("Run agents", type="primary")
+
+    if not submitted:
+        return None
+
+    return topic, style, audience, length_label, model_label
+
+
+def prepare_generation_run(request: GenerateRequest) -> None:
+    st.session_state["last_request"] = request
+    st.session_state.pop("generated_output", None)
+    st.session_state.pop("generated_model", None)
 
 
 def inject_theme_css(theme: str) -> None:
@@ -380,8 +438,7 @@ def render_header() -> None:
 
 
 def format_length_option(label: str) -> str:
-    value = LENGTH_OPTIONS[label]
-    return f"{label}"
+    return label
 
 
 def build_request(
@@ -407,14 +464,67 @@ def run_generation(request: GenerateRequest) -> None:
         try:
             output, model_name = generate_with_content_crew(request)
         except AppError as exc:
-            st.error(exc.detail)
+            render_generation_error(exc.detail)
             return
         except Exception as exc:  # pragma: no cover - depends on provider/network behavior
-            st.error(f"Agent workflow failed: {exc}")
+            render_generation_error(str(exc))
             return
 
     st.session_state["generated_output"] = output
     st.session_state["generated_model"] = model_name
+    st.session_state["generation_run_id"] = st.session_state.get("generation_run_id", 0) + 1
+
+
+def render_generation_error(detail: str) -> None:
+    st.error(get_friendly_error_message(detail))
+
+    cleaned_detail = detail.strip()
+    if cleaned_detail:
+        with st.expander("Technical details"):
+            st.code(truncate_error_detail(cleaned_detail), language="text")
+
+
+def get_friendly_error_message(detail: str) -> str:
+    normalized = detail.lower()
+
+    if "missing groq_api_key" in normalized or "api key" in normalized and "missing" in normalized:
+        return "Missing Groq API key. Add `GROQ_API_KEY` to your `.env` file and try again."
+
+    if "authentication" in normalized or "invalid api key" in normalized or "401" in normalized:
+        return "Groq rejected the API key. Check that `GROQ_API_KEY` is valid, then run the agents again."
+
+    if "rate limit" in normalized or "429" in normalized:
+        return "The model provider is rate limiting requests right now. Wait a moment, then try again."
+
+    if "quota" in normalized or "insufficient" in normalized and "credits" in normalized:
+        return "The model provider reported a quota or credits issue. Check the Groq account limits and billing."
+
+    if "model" in normalized and (
+        "not found" in normalized
+        or "does not exist" in normalized
+        or "decommissioned" in normalized
+        or "unsupported" in normalized
+    ):
+        return "The selected model is unavailable. Choose another model and run the agents again."
+
+    if "timeout" in normalized or "timed out" in normalized:
+        return "The agent workflow took too long to respond. Try again with a shorter brief or a different model."
+
+    if "connection" in normalized or "network" in normalized or "dns" in normalized:
+        return "The app could not reach the model provider. Check the network connection and try again."
+
+    if "crewai is not installed" in normalized:
+        return "CrewAI is not installed. Run `pip install -r requirements.txt`, then restart the app."
+
+    return "The agent workflow could not finish. Please try again or switch models."
+
+
+def truncate_error_detail(detail: str, limit: int = 1600) -> str:
+    single_spaced = re.sub(r"\n{3,}", "\n\n", detail)
+    if len(single_spaced) <= limit:
+        return single_spaced
+
+    return f"{single_spaced[:limit].rstrip()}\n\n... technical details truncated ..."
 
 
 def render_output() -> None:
@@ -440,12 +550,233 @@ def render_output() -> None:
         output=output,
         model_name=st.session_state["generated_model"],
         theme=st.session_state["theme"],
+        run_id=st.session_state.get("generation_run_id", 0),
     )
 
 
-def render_generated_output(output: str, model_name: str, theme: str) -> None:
+def markdown_to_html(markdown_text: str) -> str:
+    lines = markdown_text.splitlines()
+    blocks: list[str] = []
+    paragraph: list[str] = []
+    list_type: str | None = None
+    list_items: list[str] = []
+    code_lines: list[str] = []
+    code_language = ""
+    in_code_block = False
+
+    def flush_paragraph() -> None:
+        nonlocal paragraph
+        if paragraph:
+            rendered = " ".join(render_inline_markdown(line.strip()) for line in paragraph)
+            blocks.append(f"<p>{rendered}</p>")
+            paragraph = []
+
+    def flush_list() -> None:
+        nonlocal list_type, list_items
+        if list_type and list_items:
+            items = "".join(f"<li>{item}</li>" for item in list_items)
+            blocks.append(f"<{list_type}>{items}</{list_type}>")
+        list_type = None
+        list_items = []
+
+    line_index = 0
+    while line_index < len(lines):
+        raw_line = lines[line_index]
+        line = raw_line.rstrip()
+        stripped = line.strip()
+
+        if stripped.startswith("```"):
+            if in_code_block:
+                language_class = f' class="language-{html.escape(code_language)}"' if code_language else ""
+                code = html.escape("\n".join(code_lines))
+                blocks.append(f"<pre><code{language_class}>{code}</code></pre>")
+                code_lines = []
+                code_language = ""
+                in_code_block = False
+            else:
+                flush_paragraph()
+                flush_list()
+                code_language = stripped[3:].strip().split(maxsplit=1)[0]
+                in_code_block = True
+            line_index += 1
+            continue
+
+        if in_code_block:
+            code_lines.append(line)
+            line_index += 1
+            continue
+
+        if not stripped:
+            flush_paragraph()
+            flush_list()
+            line_index += 1
+            continue
+
+        if line_index + 1 < len(lines) and is_table_separator_row(lines[line_index + 1]):
+            header_cells = split_markdown_table_row(line)
+            alignments = parse_table_alignments(lines[line_index + 1])
+            if len(header_cells) >= 2 and len(header_cells) == len(alignments):
+                flush_paragraph()
+                flush_list()
+                table_rows: list[list[str]] = []
+                line_index += 2
+                while line_index < len(lines):
+                    row_line = lines[line_index].strip()
+                    row_cells = split_markdown_table_row(row_line)
+                    if not row_line or len(row_cells) != len(header_cells):
+                        break
+                    table_rows.append(row_cells)
+                    line_index += 1
+
+                blocks.append(render_markdown_table(header_cells, alignments, table_rows))
+                continue
+
+        if is_table_separator_row(line):
+            line_index += 1
+            continue
+
+        heading = re.match(r"^(#{1,6})\s+(.+)$", stripped)
+        if heading:
+            flush_paragraph()
+            flush_list()
+            level = len(heading.group(1))
+            blocks.append(f"<h{level}>{render_inline_markdown(heading.group(2))}</h{level}>")
+            line_index += 1
+            continue
+
+        quote_match = re.match(r"^>\s?(.+)$", stripped)
+        if quote_match:
+            flush_paragraph()
+            flush_list()
+            blocks.append(f"<blockquote>{render_inline_markdown(quote_match.group(1))}</blockquote>")
+            line_index += 1
+            continue
+
+        unordered = re.match(r"^[-*+]\s+(.+)$", stripped)
+        ordered = re.match(r"^\d+[.)]\s+(.+)$", stripped)
+        if unordered or ordered:
+            flush_paragraph()
+            current_type = "ul" if unordered else "ol"
+            if list_type and list_type != current_type:
+                flush_list()
+            list_type = current_type
+            item_text = unordered.group(1) if unordered else ordered.group(1)
+            list_items.append(render_inline_markdown(item_text))
+            line_index += 1
+            continue
+
+        flush_list()
+        paragraph.append(stripped)
+        line_index += 1
+
+    if in_code_block:
+        language_class = f' class="language-{html.escape(code_language)}"' if code_language else ""
+        code = html.escape("\n".join(code_lines))
+        blocks.append(f"<pre><code{language_class}>{code}</code></pre>")
+
+    flush_paragraph()
+    flush_list()
+    return "\n".join(blocks)
+
+
+def split_markdown_table_row(row: str) -> list[str]:
+    stripped = row.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+
+    return [cell.strip() for cell in stripped.split("|")]
+
+
+def is_table_separator_row(row: str) -> bool:
+    cells = split_markdown_table_row(row)
+    if len(cells) < 2:
+        return False
+
+    return all(re.fullmatch(r":?-{3,}:?", cell.strip()) for cell in cells)
+
+
+def parse_table_alignments(separator_row: str) -> list[str]:
+    alignments: list[str] = []
+    for cell in split_markdown_table_row(separator_row):
+        stripped = cell.strip()
+        if stripped.startswith(":") and stripped.endswith(":"):
+            alignments.append("center")
+        elif stripped.endswith(":"):
+            alignments.append("right")
+        else:
+            alignments.append("left")
+
+    return alignments
+
+
+def render_markdown_table(
+    header_cells: list[str],
+    alignments: list[str],
+    body_rows: list[list[str]],
+) -> str:
+    header_html = "".join(
+        render_table_cell("th", cell, alignments[index])
+        for index, cell in enumerate(header_cells)
+    )
+    rows_html = "".join(
+        "<tr>"
+        + "".join(render_table_cell("td", cell, alignments[index]) for index, cell in enumerate(row))
+        + "</tr>"
+        for row in body_rows
+    )
+
+    return (
+        '<div class="table-wrap">'
+        "<table>"
+        f"<thead><tr>{header_html}</tr></thead>"
+        f"<tbody>{rows_html}</tbody>"
+        "</table>"
+        "</div>"
+    )
+
+
+def render_table_cell(tag: str, cell: str, alignment: str) -> str:
+    return f'<{tag} style="text-align: {alignment};">{render_inline_markdown(cell)}</{tag}>'
+
+
+def render_inline_markdown(text: str) -> str:
+    parts = INLINE_CODE_RE.split(text)
+    rendered_parts: list[str] = []
+
+    for index, part in enumerate(parts):
+        if index % 2:
+            rendered_parts.append(f"<code>{html.escape(part)}</code>")
+            continue
+
+        link_position = 0
+        rendered_segment: list[str] = []
+        for match in LINK_RE.finditer(part):
+            rendered_segment.append(render_emphasis(html.escape(part[link_position:match.start()])))
+            href = html.escape(match.group(2), quote=True)
+            label = render_emphasis(html.escape(match.group(1)))
+            rendered_segment.append(
+                f'<a href="{href}" target="_blank" rel="noopener noreferrer">{label}</a>'
+            )
+            link_position = match.end()
+        rendered_segment.append(render_emphasis(html.escape(part[link_position:])))
+        rendered_parts.append("".join(rendered_segment))
+
+    return "".join(rendered_parts)
+
+
+def render_emphasis(escaped_text: str) -> str:
+    escaped_text = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", escaped_text)
+    escaped_text = re.sub(r"__([^_]+)__", r"<strong>\1</strong>", escaped_text)
+    escaped_text = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"<em>\1</em>", escaped_text)
+    escaped_text = re.sub(r"(?<!_)_([^_\n]+)_(?!_)", r"<em>\1</em>", escaped_text)
+    return escaped_text
+
+
+def render_generated_output(output: str, model_name: str, theme: str, run_id: int) -> None:
     tokens = THEME_TOKENS[theme]
-    escaped_output = html.escape(output)
+    rendered_output = markdown_to_html(output)
     escaped_model = html.escape(model_name)
     clipboard_text = json.dumps(output)
     download_href = f"data:text/markdown;charset=utf-8,{quote(output)}"
@@ -572,7 +903,126 @@ def render_generated_output(output: str, model_name: str, theme: str) -> None:
                 color: var(--cc-text);
                 font-size: 1rem;
                 line-height: 1.6;
-                white-space: pre-wrap;
+              }}
+
+              .output-body > :first-child {{
+                margin-top: 0;
+              }}
+
+              .output-body > :last-child {{
+                margin-bottom: 0;
+              }}
+
+              .output-body h1,
+              .output-body h2,
+              .output-body h3,
+              .output-body h4,
+              .output-body h5,
+              .output-body h6 {{
+                margin: 1rem 0 0.45rem;
+                color: var(--cc-text);
+                line-height: 1.25;
+              }}
+
+              .output-body h1 {{
+                font-size: 1.45rem;
+              }}
+
+              .output-body h2 {{
+                font-size: 1.28rem;
+              }}
+
+              .output-body h3 {{
+                font-size: 1.12rem;
+              }}
+
+              .output-body p {{
+                margin: 0 0 0.85rem;
+              }}
+
+              .output-body ul,
+              .output-body ol {{
+                margin: 0 0 0.9rem 1.25rem;
+                padding: 0;
+              }}
+
+              .output-body li {{
+                margin: 0.22rem 0;
+              }}
+
+              .output-body blockquote {{
+                margin: 0 0 0.9rem;
+                padding: 0.05rem 0 0.05rem 0.9rem;
+                border-left: 3px solid var(--cc-accent);
+                color: var(--cc-muted);
+              }}
+
+              .output-body .table-wrap {{
+                margin: 0 0 0.95rem;
+                overflow-x: auto;
+                border: 1px solid var(--cc-border);
+                border-radius: 6px;
+              }}
+
+              .output-body table {{
+                width: 100%;
+                border-collapse: collapse;
+                background: var(--cc-output);
+                font-size: 0.95rem;
+              }}
+
+              .output-body th,
+              .output-body td {{
+                border-bottom: 1px solid var(--cc-border);
+                padding: 0.62rem 0.75rem;
+                vertical-align: top;
+              }}
+
+              .output-body th {{
+                background: var(--cc-panel-alt);
+                color: var(--cc-text);
+                font-weight: 800;
+              }}
+
+              .output-body tr:last-child td {{
+                border-bottom: 0;
+              }}
+
+              .output-body a {{
+                color: var(--cc-accent);
+                font-weight: 700;
+                text-decoration: none;
+              }}
+
+              .output-body a:hover {{
+                color: var(--cc-accent-hover);
+                text-decoration: underline;
+              }}
+
+              .output-body code {{
+                border: 1px solid var(--cc-border);
+                border-radius: 4px;
+                background: var(--cc-panel-alt);
+                padding: 0.08rem 0.26rem;
+                font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+                font-size: 0.92em;
+              }}
+
+              .output-body pre {{
+                margin: 0 0 0.9rem;
+                overflow: auto;
+                border: 1px solid var(--cc-border);
+                border-radius: 6px;
+                background: var(--cc-panel-alt);
+                padding: 0.85rem;
+              }}
+
+              .output-body pre code {{
+                display: block;
+                border: 0;
+                background: transparent;
+                padding: 0;
+                white-space: pre;
               }}
 
               @media (max-width: 720px) {{
@@ -587,7 +1037,7 @@ def render_generated_output(output: str, model_name: str, theme: str) -> None:
             </style>
           </head>
           <body>
-            <div class="output-pane">
+            <div class="output-pane" data-run-id="{run_id}">
               <div class="output-header">
                 <div class="output-title">
                   <div class="output-title-row">
@@ -612,7 +1062,7 @@ def render_generated_output(output: str, model_name: str, theme: str) -> None:
                 </div>
                 <div class="copy-status" id="copy-status" aria-live="polite"></div>
               </div>
-              <div class="output-body">{escaped_output}</div>
+              <div class="output-body">{rendered_output}</div>
             </div>
             <script>
               const outputText = {clipboard_text};
