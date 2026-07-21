@@ -12,25 +12,37 @@ Enter a topic, audience, writing style, and length. The app sends the request th
 - Groq-powered content generation
 - Copy and Markdown download for the final output
 
+## Requirements
+
+- **Python 3.10–3.13** (crewai does not support Python 3.14+)
+- A [Groq API key](https://console.groq.com)
+
 ## Quick Start
 
-Create a virtual environment:
+### Option 1 — Install script (Windows, recommended)
+
+Run the included PowerShell script. It auto-detects Python 3.12 and handles everything:
+
+```powershell
+.\install.ps1
+```
+
+### Option 2 — Manual install
+
+Use **Python 3.12** explicitly (not your system default if it is 3.14+):
+
+```powershell
+# Windows
+python3.12-64.exe -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install --prefer-binary -r requirements.txt
+```
 
 ```bash
-python3 -m venv .venv
+# macOS / Linux
+python3.12 -m venv .venv
 source .venv/bin/activate
-```
-
-Install the dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-Create your local environment file:
-
-```bash
-touch .env
+pip install --prefer-binary -r requirements.txt
 ```
 
 Add your Groq API key to `.env`:
